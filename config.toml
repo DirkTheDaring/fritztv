@@ -1,0 +1,16 @@
+[server]
+host = "0.0.0.0"
+port = 3000
+max_parallel_streams = 4
+
+[fritzbox]
+# Backward compatible: you can still use `playlist_url = "..."`
+# New: load multiple playlists by using `playlist_urls = ["...", "..."]`
+playlist_urls = [
+	"https://192.168.178.1/dvb/m3u/tvsd.m3u",
+        "https://192.168.178.1/dvb/m3u/tvhd.m3u"
+]
+
+[transcoding]
+mode = "Smooth" # Options: LowLatency, Smooth
+transport = "udp" # Options: udp (default), tcp (force reliable)

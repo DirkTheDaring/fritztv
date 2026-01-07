@@ -1,0 +1,3 @@
+# Environment variables for Fritztv
+# RUST_LOG=info
+ARGS=""

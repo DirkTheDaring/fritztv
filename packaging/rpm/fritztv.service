@@ -1,0 +1,35 @@
+[Unit]
+Description=Fritztv Transcoding Server
+After=network.target
+
+[Service]
+Type=simple
+User=fritztv
+Group=fritztv
+# Adjust these paths to match your installation
+EnvironmentFile=-/etc/sysconfig/fritztv
+ExecStart=/usr/bin/fritztv --config /etc/fritztv/config.toml --mode smooth $ARGS
+Restart=always
+RestartSec=5
+# Security Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/fritztv
+DeviceAllow=/dev/null rw
+# Allow access to input/output
+StandardOutput=journal
+StandardError=journal
+# Priority Tuning
+Nice=-15
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=1
+
+# Environment
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
