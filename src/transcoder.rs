@@ -50,6 +50,28 @@ impl Transcoder {
             // Input-side buffering can help with UDP/RTP jitter.
             args.extend(["-rtbufsize".into(), "10M".into()]);
 
+            // Robustness: clean up input timestamps and drop garbage.
+            args.extend([
+                "-fflags".into(), "+genpts+discardcorrupt".into(),
+                "-avoid_negative_ts".into(), "make_zero".into(),
+            ]);
+
+            // Tuning for startup speed vs stability
+            match mode {
+                TuningMode::LowLatency => {
+                    args.extend([
+                        "-analyzeduration".into(), "2000000".into(), // 2s
+                        "-probesize".into(), "2000000".into(),       // 2MB
+                    ]);
+                }
+                TuningMode::Smooth => {
+                    args.extend([
+                        "-analyzeduration".into(), "10000000".into(), // 10s
+                        "-probesize".into(), "10000000".into(),       // 10MB
+                    ]);
+                }
+            }
+
             args.push("-y".into());
             args.push("-i".into());
             args.push(url.clone());
@@ -81,6 +103,8 @@ impl Transcoder {
                     // Baseline profile for iOS compatibility.
                     "-profile:v".into(), "baseline".into(),
                     "-level".into(), "3.1".into(),
+                    // HLS Requirement: Closed GOPs for independent segments
+                    "-flags".into(), "+cgop".into(),
                     // Make keyframes predictable to reduce client buffering and align
                     // fMP4 fragments / HLS segments with IDR boundaries.
                     "-g".into(), "50".into(),
