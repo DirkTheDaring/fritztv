@@ -10,6 +10,7 @@ use std::{
 };
 
 use tokio::sync::{Mutex, RwLock};
+use tracing::info;
 
 use crate::transcoder::TuningMode;
 
@@ -151,5 +152,35 @@ impl HlsManager {
             return None;
         }
         Some(dir.join(name))
+    }
+
+    pub async fn prepare_new_session(&self, id: &str) {
+        let streams = self.inner.streams.lock().await;
+        if let Some(stream) = streams.get(id) {
+            info!("HLS new session for {}: cleaning up old segments", id);
+            
+            // Mark playlist not ready
+            let mut w = stream.playlist_ready.write().await;
+            *w = false;
+            drop(w);
+
+            // Clean dirt
+            let dir = stream.dir.clone();
+            clean_hls_dir(&dir).await;
+
+            // Spawn new watcher
+            let ready_flag = Arc::clone(&stream.playlist_ready);
+            tokio::spawn(async move {
+                let playlist_path = dir.join("index.m3u8");
+                for _ in 0..200 {
+                    if tokio::fs::metadata(&playlist_path).await.is_ok() {
+                        let mut w = ready_flag.write().await;
+                        *w = true;
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+        }
     }
 }

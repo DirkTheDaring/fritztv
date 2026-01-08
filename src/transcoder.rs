@@ -213,9 +213,24 @@ impl Transcoder {
                                                 break;
                                             }
 
-                                            let size = u32::from_be_bytes(stream_buffer[0..4].try_into().unwrap()) as usize;
-                                            // Basic sanity check, size < 8 means invalid or extended (which we skip for now as fMP4 fragments shouldn't be > 4GB)
-                                            if size < 8 {
+                                            let mut size = u32::from_be_bytes(stream_buffer[0..4].try_into().unwrap()) as usize;
+                                            let mut header_len = 8;
+
+                                            // Extended size support
+                                            if size == 1 {
+                                                if stream_buffer.len() < 16 {
+                                                    break;
+                                                }
+                                                let huge_size = u64::from_be_bytes(stream_buffer[8..16].try_into().unwrap());
+                                                // usize might be 32-bit on some systems, though unlikely for this server.
+                                                // Cap at rational limits for fMP4 fragments (e.g. 100MB).
+                                                if huge_size > 100 * 1024 * 1024 {
+                                                    error!("Atom size too large: {} (url={})", huge_size, url);
+                                                    break;
+                                                }
+                                                size = huge_size as usize;
+                                                header_len = 16;
+                                            } else if size < 8 {
                                                 error!("Invalid atom size: {} (url={})", size, url);
                                                 break;
                                             }
@@ -227,7 +242,8 @@ impl Transcoder {
 
                                             // Extract the full atom
                                             let atom_data = stream_buffer.split_to(size).freeze();
-                                            let type_str = std::str::from_utf8(&atom_data[4..8]).unwrap_or("????");
+                                            let type_offset = if header_len == 16 { 4 } else { 4 };
+                                            let type_str = std::str::from_utf8(&atom_data[type_offset..type_offset+4]).unwrap_or("????");
 
                                             if !header_captured {
                                                 if type_str == "moof" {

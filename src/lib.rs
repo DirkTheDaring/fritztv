@@ -35,13 +35,29 @@ use crate::transcoder::TuningMode;
 struct GuardedStream {
     _guard: manager::ClientGuard,
     inner: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>,
+    id: usize,
+    last_log_time: std::time::Instant,
+    bytes_since_last_log: usize,
 }
 
 impl Stream for GuardedStream {
     type Item = Result<bytes::Bytes, std::io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.inner.as_mut().poll_next(cx)
+        let res = self.inner.as_mut().poll_next(cx);
+        if let Poll::Ready(Some(Ok(ref bytes))) = res {
+            self.bytes_since_last_log += bytes.len();
+            let elapsed = self.last_log_time.elapsed();
+            if elapsed >= std::time::Duration::from_secs(5) {
+                let bytes = self.bytes_since_last_log;
+                let secs = elapsed.as_secs_f64();
+                let rate_kb = (bytes as f64 / secs) / 1024.0;
+                info!("Stream bandwidth: channel_id={} rate={:.2} KB/s", self.id, rate_kb);
+                self.last_log_time = std::time::Instant::now();
+                self.bytes_since_last_log = 0;
+            }
+        }
+        res
     }
 }
 
@@ -667,7 +683,7 @@ async fn hls_playlist_handler(
     // into this directory (no second RTSP session).
     if let Err(e) = state
         .stream_manager
-        .ensure_stream(stream_id.clone(), channel.url.clone(), Some(dir.clone()))
+        .ensure_stream(stream_id.clone(), channel.url.clone(), Some(dir.clone()), Some(&state.hls_manager))
         .await
     {
         warn!("HLS ensure_stream rejected: id={} err={}", id, e);
@@ -941,7 +957,7 @@ async fn hls_segment_handler(
     // Ensure the single shared transcoder is running and is configured to write HLS.
     if let Err(e) = state
         .stream_manager
-        .ensure_stream(stream_id.clone(), channel.url.clone(), Some(dir.clone()))
+        .ensure_stream(stream_id.clone(), channel.url.clone(), Some(dir.clone()), Some(&state.hls_manager))
         .await
     {
         warn!("HLS ensure_stream rejected: id={} err={}", id, e);
@@ -1081,7 +1097,7 @@ async fn stream_handler(
 
     let (rx, header_store, cache_snapshot, guard) = match state
         .stream_manager
-        .get_or_start_stream(stream_id.clone(), channel.url.clone(), Some(hls_dir))
+        .get_or_start_stream(stream_id.clone(), channel.url.clone(), Some(hls_dir), Some(&state.hls_manager))
         .await
     {
         Ok(v) => v,
@@ -1215,6 +1231,9 @@ async fn stream_handler(
     let guarded_stream = GuardedStream {
         _guard: guard,
         inner: Box::pin(stream),
+        id: id,
+        last_log_time: std::time::Instant::now(),
+        bytes_since_last_log: 0,
     };
 
     axum::response::Response::builder()

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 use bytes::Bytes;
 use crate::transcoder::{Transcoder, TuningMode};
+use crate::hls::HlsManager;
 use tracing::info;
 use anyhow::anyhow;
 use std::time::Duration;
@@ -154,6 +155,7 @@ impl StreamManager {
         id: String,
         url: String,
         hls_dir: Option<PathBuf>,
+        hls_manager: Option<&HlsManager>,
     ) -> anyhow::Result<(
         broadcast::Receiver<Bytes>,
         Arc<RwLock<Option<Bytes>>>,
@@ -239,6 +241,10 @@ impl StreamManager {
         let cache = Arc::new(RwLock::new(std::collections::VecDeque::new()));
         let client_count = Arc::new(AtomicUsize::new(1));
         info!("Client connected to {} (client_count=1)", id);
+
+        if let Some(hls) = hls_manager {
+            hls.prepare_new_session(&id).await;
+        }
         
         let hls_last_access = Arc::new(AtomicU64::new(if hls_dir.is_some() { now_epoch_secs() } else { 0 }));
         let transcoder = Transcoder::new(
@@ -340,6 +346,7 @@ impl StreamManager {
         id: String,
         url: String,
         hls_dir: Option<PathBuf>,
+        hls_manager: Option<&HlsManager>,
     ) -> anyhow::Result<()> {
         let mut streams = self.streams.write().await;
         if streams.contains_key(&id) {
@@ -398,6 +405,11 @@ impl StreamManager {
         let header = Arc::new(RwLock::new(None));
         let cache = Arc::new(RwLock::new(std::collections::VecDeque::new()));
         let client_count = Arc::new(AtomicUsize::new(0));
+
+        if let Some(hls) = hls_manager {
+            hls.prepare_new_session(&id).await;
+        }
+
         let hls_last_access = Arc::new(AtomicU64::new(if hls_dir.is_some() { now_epoch_secs() } else { 0 }));
 
         let transcoder = Transcoder::new(
