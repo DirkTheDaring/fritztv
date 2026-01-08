@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-01-08
+### Added
+- **Flexible Multithreading**: Added `transcoding.threads` config to tune FFmpeg CPU usage (default: auto).
+- **Prometheus Monitoring**: Exposed `/metrics` endpoint including:
+    - `fritztv_client_bandwidth_bytes`: Per-client bandwidth usage.
+    - `fritztv_ffmpeg_cpu_usage_percent`: Per-channel FFmpeg CPU load.
+- **Configurable Logging**: Added `monitoring.console_log_bandwidth` to toggle verbose console output.
+
+### Changed
+- **Optimized HLS**: Replaced polling loops with `inotify` (via `notify` crate) for instant, zero-CPU HLS playlist updates.
+
 ## [0.6.0] - 2026-01-08
 
 ### Added

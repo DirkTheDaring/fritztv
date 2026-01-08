@@ -14,4 +14,10 @@ playlist_urls = [
 [transcoding]
 mode = "Smooth" # Options: LowLatency, Smooth
 transport = "udp" # Options: udp (default), tcp (force reliable)
-idle_timeout = 10 # Seconds to wait before stopping idle streams
+idle_timeout = 10
+threads = 0 # Seconds to wait before stopping idle streams
+
+[monitoring]
+enabled = true
+console_log_bandwidth = false
+

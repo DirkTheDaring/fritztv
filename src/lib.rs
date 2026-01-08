@@ -1,7 +1,11 @@
 pub mod channels;
 pub mod hls;
 pub mod manager;
+pub mod metrics;
+
 pub mod transcoder;
+
+use crate::metrics::MonitoringConfig;
 
 use axum::{
     extract::{Path, State},
@@ -28,6 +32,7 @@ struct AppState {
     channels: Vec<Channel>,
     stream_manager: StreamManager,
     hls_manager: HlsManager,
+    monitoring: MonitoringConfig,
 }
 
 use crate::transcoder::TuningMode;
@@ -37,7 +42,9 @@ struct GuardedStream {
     inner: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>,
     id: usize,
     last_log_time: std::time::Instant,
+
     bytes_since_last_log: usize,
+    console_log: bool,
 }
 
 impl Stream for GuardedStream {
@@ -51,8 +58,17 @@ impl Stream for GuardedStream {
             if elapsed >= std::time::Duration::from_secs(5) {
                 let bytes = self.bytes_since_last_log;
                 let secs = elapsed.as_secs_f64();
-                let rate_kb = (bytes as f64 / secs) / 1024.0;
-                info!("Stream bandwidth: channel_id={} rate={:.2} KB/s", self.id, rate_kb);
+                let rate_bytes = bytes as f64 / secs;
+                
+                // Update Prometheus metric
+                metrics::CLIENT_BANDWIDTH.with_label_values(&[&self.id.to_string()]).set(rate_bytes);
+
+                // Conditional console log
+                if self.console_log {
+                    let rate_kb = rate_bytes / 1024.0;
+                    info!("Stream bandwidth: channel_id={} rate={:.2} KB/s", self.id, rate_kb);
+                }
+
                 self.last_log_time = std::time::Instant::now();
                 self.bytes_since_last_log = 0;
             }
@@ -61,21 +77,33 @@ impl Stream for GuardedStream {
     }
 }
 
-pub fn create_app(
+pub async fn create_app(
     channels: Vec<Channel>,
-    mode: TuningMode,
+    tuning_mode: TuningMode,
     transport: String,
     max_parallel_streams: usize,
     idle_timeout: u64,
-) -> Router {
-    let stream_transport = transport.clone();
+
+    threads: u8,
+    monitoring: MonitoringConfig,
+) -> axum::Router {
+
+    // StreamManager internally uses Arcs, so it is cheap to clone/move.
+    let stream_manager = manager::StreamManager::new(
+        tuning_mode,
+        transport.clone(),
+        max_parallel_streams,
+        idle_timeout,
+        threads,
+    );
     let state = Arc::new(AppState {
         channels,
-        stream_manager: StreamManager::new(mode, stream_transport, max_parallel_streams, idle_timeout),
-        hls_manager: HlsManager::new(mode, transport),
+        stream_manager,
+        hls_manager: HlsManager::new(tuning_mode, transport),
+        monitoring: monitoring.clone(),
     });
 
-    Router::new()
+    let mut router = Router::new()
         .route("/", get(index_handler))
         .route("/api/channels", get(channels_api_handler))
         .route("/api/client-log", post(client_log_handler))
@@ -90,7 +118,17 @@ pub fn create_app(
         )
         .route("/watch/{id}", get(watch_handler))
         .fallback(fallback_handler)
-        .with_state(state)
+        .with_state(state);
+    
+    if monitoring.enabled {
+        router = router.route("/metrics", get(metrics_handler));
+    }
+
+    router
+}
+
+async fn metrics_handler() -> String {
+    metrics::gather_metrics()
 }
 
 async fn fallback_handler(method: Method, uri: Uri, headers: HeaderMap) -> impl IntoResponse {
@@ -719,46 +757,45 @@ async fn hls_playlist_handler(
     // Avoid holding this request open too long: Safari may leave play() pending and
     // effectively time out if the playlist GET doesn't return quickly.
     // We'll wait briefly for the playlist file to appear, then serve whatever we have.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut last_bytes: Option<Vec<u8>> = None;
-    let mut saw_any_segment = false;
-    let mut first_segment_name: Option<String> = None;
-
-    while std::time::Instant::now() < deadline {
-        match tokio::fs::read(&playlist_path).await {
-            Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
-                let seg_lines: Vec<String> = text
-                    .lines()
-                    .filter(|l| l.starts_with("seg_") && l.ends_with(".ts"))
-                    .map(|s| s.to_string())
-                    .collect();
-
-                if let Some(first) = seg_lines.first() {
-                    saw_any_segment = true;
-                    first_segment_name = Some(first.clone());
-                }
-                last_bytes = Some(bytes);
-
-                // If we already have at least one segment listed, don't block further.
-                if saw_any_segment {
-                    break;
-                }
-            }
-            Err(_) => {
-                // keep waiting
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    // Avoid holding this request open too long: Safari may leave play() pending and
+    // effectively time out if the playlist GET doesn't return quickly.
+    // We'll wait briefly for the playlist file to appear, then serve whatever we have.
+    let deadline = std::time::Duration::from_secs(1);
+    
+    // Wait for the playlist to be ready (signaled by inotify)
+    let _ = state.hls_manager.wait_for_playlist(&stream_id, deadline).await;
 
     state.stream_manager.touch_hls(&stream_id).await;
     state.hls_manager.touch(&stream_id).await;
 
+    let mut last_bytes: Option<Vec<u8>> = None;
+    let mut first_segment_name: Option<String> = None;
+
+    // Now try to read it
+    match tokio::fs::read(&playlist_path).await {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let seg_lines: Vec<String> = text
+                .lines()
+                .filter(|l| l.starts_with("seg_") && l.ends_with(".ts"))
+                .map(|s| s.to_string())
+                .collect();
+
+            if let Some(first) = seg_lines.first() {
+                first_segment_name = Some(first.clone());
+            }
+            last_bytes = Some(bytes);
+        }
+        Err(_) => {
+            // If failed to read (timeout or permission?), last_bytes remains None
+        }
+    }
+
     match last_bytes {
         Some(bytes) => {
-            // If we have a segment listed, wait briefly for the first segment to exist
-            // (but don't block long enough to make Safari give up).
+            // We have the file content.
+            // Note: We don't need to loop-check for segments anymore because wait_for_playlist
+            // ensures the file was just created/modified by ffmpeg, which usually writes a valid playlist.
             if let Some(seg) = &first_segment_name {
                 let seg_path = dir.join(seg);
                 let seg_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1234,6 +1271,7 @@ async fn stream_handler(
         id: id,
         last_log_time: std::time::Instant::now(),
         bytes_since_last_log: 0,
+        console_log: state.monitoring.console_log_bandwidth,
     };
 
     axum::response::Response::builder()

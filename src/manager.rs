@@ -136,16 +136,18 @@ pub struct StreamManager {
     transport: String,
     max_parallel_streams: usize,
     idle_timeout: u64,
+    ffmpeg_threads: u8,
 }
 
 impl StreamManager {
-    pub fn new(mode: TuningMode, transport: String, max_parallel_streams: usize, idle_timeout: u64) -> Self {
+    pub fn new(mode: TuningMode, transport: String, max_parallel_streams: usize, idle_timeout: u64, ffmpeg_threads: u8) -> Self {
         Self {
             streams: Arc::new(RwLock::new(HashMap::new())),
             mode,
             transport,
             max_parallel_streams: max_parallel_streams.max(1),
             idle_timeout,
+            ffmpeg_threads,
         }
     }
 
@@ -248,12 +250,14 @@ impl StreamManager {
         
         let hls_last_access = Arc::new(AtomicU64::new(if hls_dir.is_some() { now_epoch_secs() } else { 0 }));
         let transcoder = Transcoder::new(
+            id.clone(),
             effective_url.clone(),
             tx.clone(),
             header.clone(),
             self.mode,
             self.transport.clone(),
             hls_dir,
+            self.ffmpeg_threads,
         );
         
         let active_stream = Arc::new(ActiveStream {
@@ -413,12 +417,14 @@ impl StreamManager {
         let hls_last_access = Arc::new(AtomicU64::new(if hls_dir.is_some() { now_epoch_secs() } else { 0 }));
 
         let transcoder = Transcoder::new(
+            id.clone(),
             effective_url.clone(),
             tx.clone(),
             header.clone(),
             self.mode,
             self.transport.clone(),
             hls_dir,
+            self.ffmpeg_threads,
         );
 
         let active_stream = Arc::new(ActiveStream {

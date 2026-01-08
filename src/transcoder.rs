@@ -9,9 +9,12 @@ use tracing::{info, warn, error, debug};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::Mutex;
 use std::collections::VecDeque;
+use sysinfo::{Pid, System};
+use crate::metrics::FFMPEG_CPU_USAGE;
 
 pub struct Transcoder {
     stop_signal: tokio::sync::watch::Sender<bool>,
+    channel_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,16 +25,21 @@ pub enum TuningMode {
 
 impl Transcoder {
     pub fn new(
+        channel_id: String,
         url: String,
         tx: broadcast::Sender<Bytes>,
         header_store: Arc<RwLock<Option<Bytes>>>,
         mode: TuningMode,
         transport: String,
+
         hls_dir: Option<PathBuf>,
+        threads: u8,
     ) -> Self {
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let channel_id_task = channel_id.clone();
 
         tokio::spawn(async move {
+            let channel_id = channel_id_task; // Shadow it for convenience inside the task
             info!(
                 "Starting ffmpeg for {} in {:?} mode (transport: {}, hls={})",
                 url,
@@ -99,7 +107,9 @@ impl Transcoder {
                 out.extend([
                     "-vf".into(), "yadif".into(),
                     "-pix_fmt".into(), "yuv420p".into(),
+
                     "-c:v".into(), "libx264".into(),
+                    "-threads".into(), threads.to_string(),
                     // Baseline profile for iOS compatibility.
                     "-profile:v".into(), "baseline".into(),
                     "-level".into(), "3.1".into(),
@@ -172,6 +182,32 @@ impl Transcoder {
                 Ok(mut child) => {
                     if let Some(pid) = child.id() {
                         info!("ffmpeg spawned: pid={} url={}", pid, url);
+                        
+                        // CPU Monitoring Task
+                        let channel_id_mon = channel_id.clone();
+                        let pid_u32 = pid;
+                        let mut stop_rx_mon = stop_rx.clone();
+                        
+                        tokio::spawn(async move {
+                            let mut sys = System::new();
+                            let pid = Pid::from_u32(pid_u32);
+                            
+                            loop {
+                                tokio::select! {
+                                    _ = stop_rx_mon.changed() => break,
+                                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                                        let processes = sysinfo::ProcessesToUpdate::Some(&[pid]);
+                                        sys.refresh_processes(processes, true);
+                                        if let Some(process) = sys.process(pid) {
+                                            let usage = process.cpu_usage();
+                                            FFMPEG_CPU_USAGE.with_label_values(&[&channel_id_mon]).set(usage as f64);
+                                        } else {
+                                            break; 
+                                        }
+                                    }
+                                }
+                            }
+                        });
                     }
                     let mut stdout = child.stdout.take().expect("Failed to open stdout");
                     let stderr = child.stderr.take().expect("Failed to open stderr");
@@ -179,9 +215,10 @@ impl Transcoder {
                     // Capture a rolling buffer of stderr lines so we can print context
                     // when ffmpeg exits, without spamming the console.
                     let stderr_ring: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(80)));
-                    let stderr_ring_for_reader = Arc::clone(&stderr_ring);
-                    tokio::spawn(async move {
-                        let mut buffer = String::new();
+                        let stderr_ring_for_reader = Arc::clone(&stderr_ring);
+                        tokio::spawn(async move {
+                            let mut buffer = String::new();
+
                         let mut reader = tokio::io::BufReader::new(stderr);
                         use tokio::io::AsyncBufReadExt;
                         while let Ok(n) = reader.read_line(&mut buffer).await {
@@ -355,6 +392,7 @@ impl Transcoder {
 
         Self {
             stop_signal: stop_tx,
+            channel_id, 
         }
     }
 }
@@ -362,5 +400,6 @@ impl Transcoder {
 impl Drop for Transcoder {
     fn drop(&mut self) {
         let _ = self.stop_signal.send(true);
+        FFMPEG_CPU_USAGE.with_label_values(&[&self.channel_id]).set(0.0);
     }
 }

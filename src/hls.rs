@@ -27,6 +27,9 @@ fn stable_hash_u64(value: &str) -> u64 {
     hasher.finish()
 }
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event};
+use tokio::sync::Notify;
+
 #[derive(Clone)]
 pub struct HlsManager {
     inner: Arc<Inner>,
@@ -35,12 +38,14 @@ pub struct HlsManager {
 struct Inner {
     streams: Mutex<HashMap<String, HlsStream>>,
     base_dir: PathBuf,
+    _watcher: Mutex<RecommendedWatcher>,
 }
 
 struct HlsStream {
     dir: PathBuf,
     last_access: Arc<AtomicU64>,
     playlist_ready: Arc<RwLock<bool>>,
+    playlist_ready_notify: Arc<Notify>,
 }
 
 async fn clean_hls_dir(dir: &Path) {
@@ -63,12 +68,60 @@ impl HlsManager {
     pub fn new(mode: TuningMode, transport: String) -> Self {
         let _ = mode;
         let _ = transport;
-        Self {
-            inner: Arc::new(Inner {
-                streams: Mutex::new(HashMap::new()),
-                base_dir: PathBuf::from("/tmp/fritztv-hls"),
-            }),
-        }
+        
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        
+        // Create the watcher that sends events to our channel.
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        }).expect("Failed to create watcher");
+
+        let base_dir = PathBuf::from("/tmp/fritztv-hls");
+        
+        // Ensure base dir exists so we can watch it (recursively).
+        std::fs::create_dir_all(&base_dir).expect("Failed to create base HLS dir");
+        watcher.watch(&base_dir, RecursiveMode::Recursive).expect("Failed to watch HLS dir");
+
+        let inner = Arc::new(Inner {
+            streams: Mutex::new(HashMap::new()),
+            base_dir,
+            _watcher: Mutex::new(watcher),
+        });
+
+        // Spawn the event handler loop
+        let inner_for_task = Arc::downgrade(&inner);
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                // We only care about creation or modification of "index.m3u8"
+                if let Some(path) = event.paths.first() {
+                    if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
+                        if filename == "index.m3u8" {
+                            // Find which stream this belongs to
+                            if let Some(inner) = inner_for_task.upgrade() {
+                                let streams = inner.streams.lock().await;
+                                // Simple linear scan is fine for O(N) where N is small (num streams)
+                                for stream in streams.values() {
+                                    if path.starts_with(&stream.dir) {
+                                        let mut w = stream.playlist_ready.write().await;
+                                        if !*w {
+                                            *w = true;
+                                            stream.playlist_ready_notify.notify_waiters();
+                                        }
+                                        break;
+                                    }
+                                }
+                            } else {
+                                break; // Inner dropped, exit task
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Self { inner }
     }
 
     pub async fn get_or_start(&self, id: String, url: String) -> anyhow::Result<PathBuf> {
@@ -82,32 +135,13 @@ impl HlsManager {
         let dir = self.inner.base_dir.join(format!("{hash:016x}"));
         tokio::fs::create_dir_all(&dir).await?;
 
-        // Ensure stale files from previous runs don't break ffmpeg (it will prompt
-        // for overwrite and then exit if stdin isn't available).
+        // Ensure stale files from previous runs don't break ffmpeg
         clean_hls_dir(&dir).await;
         let last_access = Arc::new(AtomicU64::new(now_epoch_secs()));
         let playlist_ready = Arc::new(RwLock::new(false));
+        let playlist_ready_notify = Arc::new(Notify::new());
 
-        // NOTE: We intentionally do NOT "forget" HLS streams on an idle timer.
-        // A stream may be actively transcoding MP4 while HLS clients are absent.
-        // Forgetting would cause the next HLS request to re-create the entry and
-        // (critically) re-run clean_hls_dir(), deleting the playlist/segments while
-        // ffmpeg is still writing them, which can trigger player buffering.
-
-        // Mark playlist_ready once index exists (created by the main Transcoder).
-        let dir_for_ready = dir.clone();
-        let ready_flag = Arc::clone(&playlist_ready);
-        tokio::spawn(async move {
-            let playlist_path = dir_for_ready.join("index.m3u8");
-            for _ in 0..200 {
-                if tokio::fs::metadata(&playlist_path).await.is_ok() {
-                    let mut w = ready_flag.write().await;
-                    *w = true;
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        });
+        // Note: The watcher is already watching base_dir recursively, so it sees this new dir.
 
         streams.insert(
             id,
@@ -115,6 +149,7 @@ impl HlsManager {
                 dir: dir.clone(),
                 last_access,
                 playlist_ready,
+                playlist_ready_notify,
             },
         );
 
@@ -128,17 +163,48 @@ impl HlsManager {
     }
 
     pub async fn wait_for_playlist(&self, id: &str, timeout: Duration) -> bool {
-        let start = now_epoch_secs();
+        // First check fast path
+        let notify = {
+            let streams = self.inner.streams.lock().await;
+            if let Some(stream) = streams.get(id) {
+                if *stream.playlist_ready.read().await {
+                    return true;
+                }
+                stream.playlist_ready_notify.clone()
+            } else {
+                return false;
+            }
+        };
+
+        // Wait for notification or timeout
+        // Note: There is a race here where the file is created between the check and the notify wait.
+        // However, notify_waiters() wakes up everyone. But if we missed the notification, we might wait forever.
+        // Safe Pattern: Check -> Notify::notified() (which is cancellation safe) -> Check again.
+        // Actually, Notify::notified() only wakes if notification happens *after* await starts? 
+        // No, Notify is not edge-triggered loop; it's a semaphore-like one-shot usually?
+        // tokio::sync::Notify: "Tasks will be notified if they are awaiting... or if they await *after* notify is called (if permit is stored? No)."
+        // "If `notify_waiters()` is called, all waiting tasks are woken... It does NOT store a permit."
+        
+        // So we need a loop with timeout.
+        
+        let start = std::time::Instant::now();
         loop {
-            if let Some(stream) = self.inner.streams.lock().await.get(id) {
+            if let Ok(_) = tokio::time::timeout(Duration::from_millis(500), notify.notified()).await {
+                 // Woken up
+                 return true;
+            }
+            
+            // Timeout or spuriously check
+            let streams = self.inner.streams.lock().await;
+            if let Some(stream) = streams.get(id) {
                 if *stream.playlist_ready.read().await {
                     return true;
                 }
             }
-            if now_epoch_secs().saturating_sub(start) >= timeout.as_secs() {
+            
+            if start.elapsed() >= timeout {
                 return false;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -167,20 +233,8 @@ impl HlsManager {
             // Clean dirt
             let dir = stream.dir.clone();
             clean_hls_dir(&dir).await;
-
-            // Spawn new watcher
-            let ready_flag = Arc::clone(&stream.playlist_ready);
-            tokio::spawn(async move {
-                let playlist_path = dir.join("index.m3u8");
-                for _ in 0..200 {
-                    if tokio::fs::metadata(&playlist_path).await.is_ok() {
-                        let mut w = ready_flag.write().await;
-                        *w = true;
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            });
+            
+            // No need to spawn a specific watcher; the global watcher will trigger when the new file appears.
         }
     }
 }

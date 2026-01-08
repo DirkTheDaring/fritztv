@@ -1,4 +1,4 @@
-use fritztv::{create_app, fetch_channels, channels::Channel, transcoder::TuningMode};
+use fritztv::{fetch_channels, channels::Channel, transcoder::TuningMode};
 use tracing::{info, error};
 use clap::Parser;
 use config::Config;
@@ -23,11 +23,14 @@ enum ModeArg {
     Smooth,
 }
 
+use fritztv::metrics::MonitoringConfig;
+
 #[derive(Debug, Deserialize)]
 struct Settings {
     server: ServerConfig,
     fritzbox: FritzboxConfig,
     transcoding: TranscodingConfig,
+    monitoring: MonitoringConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,22 +68,16 @@ where
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct TranscodingConfig {
     mode: ModeArg,
-    #[serde(default = "default_transport")]
     transport: String,
-    #[serde(default = "default_idle_timeout")]
     idle_timeout: u64,
+    #[serde(default)]
+    threads: u8,
 }
 
-fn default_transport() -> String {
-    "udp".to_string()
-}
 
-fn default_idle_timeout() -> u64 {
-    60
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -134,14 +131,16 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Total loaded channels: {}", channels.len());
 
-    let app = create_app(
+    let app = fritztv::create_app(
         channels,
         tuning_mode,
         settings.transcoding.transport,
         settings.server.max_parallel_streams,
         settings.transcoding.idle_timeout,
-    );
-
+        settings.transcoding.threads,
+        settings.monitoring,
+    )
+    .await;
     let addr = format!("{}:{}", settings.server.host, settings.server.port);
     info!("Listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
