@@ -120,4 +120,12 @@ release:
 		target/exe-windows-x86_64/$(PROJECT)-windows-x86_64.exe \
 		target/bin-macos-x86_64/$(PROJECT)-macos-x86_64 \
 		$$(find target/deb-debian-*-x86_64 -name "*.deb") \
-		$$(find target/rpm-fedora-*-x86_64 -name "*.rpm") \
+		$$(find target/rpm-fedora-*-x86_64 -name "*.rpm")
+
+tag:
+	@if git rev-parse "v$(VERSION)" >/dev/null 2>&1; then \
+		echo "Tag v$(VERSION) already exists."; \
+		exit 1; \
+	fi
+	git tag v$(VERSION)
+	git push origin v$(VERSION)

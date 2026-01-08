@@ -70,10 +70,16 @@ struct TranscodingConfig {
     mode: ModeArg,
     #[serde(default = "default_transport")]
     transport: String,
+    #[serde(default = "default_idle_timeout")]
+    idle_timeout: u64,
 }
 
 fn default_transport() -> String {
     "udp".to_string()
+}
+
+fn default_idle_timeout() -> u64 {
+    60
 }
 
 #[tokio::main]
@@ -102,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
         ModeArg::Smooth => TuningMode::Smooth,
     };
 
-    info!("Starting server in {:?} mode (transport: {})", tuning_mode, settings.transcoding.transport);
+    info!("Starting server in {:?} mode (transport: {}, idle: {}s)", tuning_mode, settings.transcoding.transport, settings.transcoding.idle_timeout);
 
     let mut channels: Vec<Channel> = Vec::new();
     for playlist_url in &settings.fritzbox.playlist_urls {
@@ -133,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         tuning_mode,
         settings.transcoding.transport,
         settings.server.max_parallel_streams,
+        settings.transcoding.idle_timeout,
     );
 
     let addr = format!("{}:{}", settings.server.host, settings.server.port);

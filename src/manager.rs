@@ -134,15 +134,17 @@ pub struct StreamManager {
     mode: TuningMode,
     transport: String,
     max_parallel_streams: usize,
+    idle_timeout: u64,
 }
 
 impl StreamManager {
-    pub fn new(mode: TuningMode, transport: String, max_parallel_streams: usize) -> Self {
+    pub fn new(mode: TuningMode, transport: String, max_parallel_streams: usize, idle_timeout: u64) -> Self {
         Self {
             streams: Arc::new(RwLock::new(HashMap::new())),
             mode,
             transport,
             max_parallel_streams: max_parallel_streams.max(1),
+            idle_timeout,
         }
     }
 
@@ -183,7 +185,7 @@ impl StreamManager {
         // - If another *active* stream is on the same mux, reuse its avm.
         // - Otherwise, pick a free avm in 1..=max_parallel_streams.
         let now = now_epoch_secs();
-        let idle_grace_seconds: u64 = 60;
+        let idle_grace_seconds: u64 = self.idle_timeout;
         let new_mux = mux_key_from_rtsp_url(&url);
         let mut chosen_avm: Option<u32> = None;
 
@@ -298,13 +300,13 @@ impl StreamManager {
             }
         });
 
+        let idle_grace_seconds = self.idle_timeout as u32;
         tokio::spawn(async move {
             let mut idle_seconds: u32 = 0;
             // Many players briefly disconnect/reconnect (range probing, reloads, etc.).
             // Don’t tear down the transcoder on a short-lived 0-listener window.
             // Real-world players sometimes download in bursts; keep the stream alive longer
             // than a few seconds even if client_count temporarily hits 0.
-            let idle_grace_seconds: u32 = 60;
             loop {
                 tokio::time::sleep(Duration::from_millis(1000)).await;
                 let count = client_count_clone.load(Ordering::Acquire);
@@ -346,7 +348,7 @@ impl StreamManager {
 
         // Same tuner-slot allocation as get_or_start_stream.
         let now = now_epoch_secs();
-        let idle_grace_seconds: u64 = 60;
+        let idle_grace_seconds: u64 = self.idle_timeout;
         let new_mux = mux_key_from_rtsp_url(&url);
         let mut chosen_avm: Option<u32> = None;
 
@@ -451,9 +453,9 @@ impl StreamManager {
         let id_clone = id.clone();
         let client_count_clone = client_count.clone();
         let hls_last_access_clone = hls_last_access.clone();
+        let idle_grace_seconds = self.idle_timeout as u32;
         tokio::spawn(async move {
             let mut idle_seconds: u32 = 0;
-            let idle_grace_seconds: u32 = 60;
             loop {
                 tokio::time::sleep(Duration::from_millis(1000)).await;
                 let count = client_count_clone.load(Ordering::Acquire);

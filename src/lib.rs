@@ -50,11 +50,12 @@ pub fn create_app(
     mode: TuningMode,
     transport: String,
     max_parallel_streams: usize,
+    idle_timeout: u64,
 ) -> Router {
     let stream_transport = transport.clone();
     let state = Arc::new(AppState {
         channels,
-        stream_manager: StreamManager::new(mode, stream_transport, max_parallel_streams),
+        stream_manager: StreamManager::new(mode, stream_transport, max_parallel_streams, idle_timeout),
         hls_manager: HlsManager::new(mode, transport),
     });
 
