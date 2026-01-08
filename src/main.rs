@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
         settings.server.max_parallel_streams,
         settings.transcoding.idle_timeout,
         settings.transcoding.threads,
-        settings.transcoding.hw_accel.unwrap_or_else(|| "cpu".to_string()),
+        fritztv::hardware::detect(settings.transcoding.hw_accel),
         settings.monitoring,
     )
     .await;
@@ -147,3 +147,4 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+

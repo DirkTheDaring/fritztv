@@ -16,7 +16,7 @@ mode = "Smooth" # Options: LowLatency, Smooth
 transport = "udp" # Options: udp (default), tcp (force reliable)
 idle_timeout = 10
 threads = 0 # Seconds to wait before stopping idle streams
-hw_accel = "cpu" # Options: cpu (default), vaapi (AMD/Intel)
+hw_accel = "auto" # Options: auto (default), vaapi (AMD/Intel), cpu
 
 [monitoring]
 enabled = true

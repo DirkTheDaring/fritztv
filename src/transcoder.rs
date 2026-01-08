@@ -56,12 +56,8 @@ impl Transcoder {
             let mut args: Vec<String> = Vec::new();
 
             // -- Global Hardware Initialization --
-            if hw_accel_task == "vaapi" {
-                args.extend([
-                    "-init_hw_device".into(), "vaapi=va:/dev/dri/renderD128".into(),
-                    "-filter_hw_device".into(), "va".into(),
-                ]);
-            }
+            // -- Global Hardware Initialization --
+            args.extend(crate::hardware::get_global_args(&hw_accel_task));
 
             if transport == "tcp" {
                 args.push("-rtsp_transport".into());
@@ -117,33 +113,9 @@ impl Transcoder {
                     "-max_muxing_queue_size".into(), "1024".into(),
                 ]);
 
-                if hw_accel_task == "vaapi" {
-                    out.extend([
-                        // Upload to GPU memory (NV12 format is standard for VAAPI)
-                        "-vf".into(), "format=nv12,hwupload".into(),
-                        "-c:v".into(), "h264_vaapi".into(),
-                        // QP (Constant Quality) instead of CRF for VAAPI
-                        "-qp".into(), "24".into(),
-                    ]);
-                } else {
-                    out.extend([
-                        "-vf".into(), "yadif".into(),
-                        "-pix_fmt".into(), "yuv420p".into(),
-                        "-c:v".into(), "libx264".into(),
-                        "-crf".into(), "18".into(),
-                        "-preset".into(), match mode {
-                            TuningMode::LowLatency => "fast", // Zerolatency tune set below
-                            TuningMode::Smooth => "medium",
-                        }.into(),
-                    ]);
-                }
+                // Delegate to hardware module (CPU, VAAPI, VideoToolbox, etc.)
+                out.extend(crate::hardware::get_ffmpeg_args(&hw_accel_task, mode, threads));
 
-                // Shared/Common encoding flags (applicable to both CPU and VAAPI where supported, 
-                // or just benign if ignored, but we organize carefully).
-                
-                if hw_accel_task != "vaapi" {
-                     out.extend(["-threads".into(), threads.to_string()]);
-                }
 
                 out.extend([
                      // Baseline profile for iOS compatibility (Conceptually. VAAPI profile handling differs but h264_vaapi usually defaults to High/Main. 
@@ -175,15 +147,7 @@ impl Transcoder {
                     "-b:a".into(), "128k".into(),
                 ]);
 
-                // Mode-specific tuning (mostly for CPU libx264)
-                if hw_accel_task != "vaapi" {
-                     match mode {
-                        TuningMode::LowLatency => {
-                            out.extend(["-tune".into(), "zerolatency".into()]);
-                        }
-                        TuningMode::Smooth => {} // Preset medium already set above
-                    }
-                }
+
             };
 
             // Output 1: fMP4 to stdout.

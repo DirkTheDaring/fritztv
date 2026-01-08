@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-01-08
+### Added
+- **Cross-Platform Hardware Acceleration**: Refactored hardware acceleration into OS-specific modules (`src/hardware/*`), enabling native support for macOS and Windows.
+- **macOS Support**: Added `videotoolbox` support with expert tuning (High profile, VBR constraints, low-latency optimization) for M-series/Intel chips.
+- **Windows Support**: Added support for **NVENC** (NVIDIA), **AMF** (AMD), and **QSV** (Intel) with strict CBR rate control and zero-latency tuning for stable streaming.
+- **Linux Improvements**: Enhanced `vaapi` support by adding **deinterlacing** (fixes combing on 1080i sports/TV content) and switching from QP to capped VBR for network stability.
+- **Configuration**: `hw_accel = "auto"` now intelligently selects the best available hardware encoder on Linux, macOS, and Windows.
+
+### Changed
+- **Refactoring**: Moved OS-specific hardware logic out of `transcoder.rs` into modular files for better maintainability.
+
 ## [0.7.3] - 2026-01-08
 ### Fixed
 - **Packaging**: Updated systemd service file to allow access to `/dev/dri` (render/video groups) for VAAPI hardware acceleration.

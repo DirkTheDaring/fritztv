@@ -2,6 +2,7 @@ pub mod channels;
 pub mod hls;
 pub mod manager;
 pub mod metrics;
+pub mod hardware;
 
 pub mod transcoder;
 
