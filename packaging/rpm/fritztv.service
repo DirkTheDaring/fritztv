@@ -17,6 +17,10 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/fritztv
+# GPU Access (VAAPI)
+SupplementaryGroups=render video
+DeviceAllow=/dev/dri/renderD128 rw
+DeviceAllow=/dev/dri/card0 rw
 DeviceAllow=/dev/null rw
 # Allow access to input/output
 StandardOutput=journal
