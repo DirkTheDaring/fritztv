@@ -17,7 +17,9 @@ pub struct Transcoder {
     channel_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub enum TuningMode {
     LowLatency,
     Smooth,
@@ -34,21 +36,32 @@ impl Transcoder {
 
         hls_dir: Option<PathBuf>,
         threads: u8,
+        hw_accel: String,
     ) -> Self {
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
         let channel_id_task = channel_id.clone();
+        let hw_accel_task = hw_accel.clone(); // Capture for task
 
         tokio::spawn(async move {
             let channel_id = channel_id_task; // Shadow it for convenience inside the task
             info!(
-                "Starting ffmpeg for {} in {:?} mode (transport: {}, hls={})",
+                "Starting ffmpeg for {} in {:?} mode (transport: {}, hls={}, hw_accel={})",
                 url,
                 mode,
                 transport,
-                hls_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "off".to_string())
+                hls_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "off".to_string()),
+                hw_accel_task
             );
             
             let mut args: Vec<String> = Vec::new();
+
+            // -- Global Hardware Initialization --
+            if hw_accel_task == "vaapi" {
+                args.extend([
+                    "-init_hw_device".into(), "vaapi=va:/dev/dri/renderD128".into(),
+                    "-filter_hw_device".into(), "va".into(),
+                ]);
+            }
 
             if transport == "tcp" {
                 args.push("-rtsp_transport".into());
@@ -104,44 +117,71 @@ impl Transcoder {
                     "-max_muxing_queue_size".into(), "1024".into(),
                 ]);
 
-                out.extend([
-                    "-vf".into(), "yadif".into(),
-                    "-pix_fmt".into(), "yuv420p".into(),
+                if hw_accel_task == "vaapi" {
+                    out.extend([
+                        // Upload to GPU memory (NV12 format is standard for VAAPI)
+                        "-vf".into(), "format=nv12,hwupload".into(),
+                        "-c:v".into(), "h264_vaapi".into(),
+                        // QP (Constant Quality) instead of CRF for VAAPI
+                        "-qp".into(), "24".into(),
+                    ]);
+                } else {
+                    out.extend([
+                        "-vf".into(), "yadif".into(),
+                        "-pix_fmt".into(), "yuv420p".into(),
+                        "-c:v".into(), "libx264".into(),
+                        "-crf".into(), "18".into(),
+                        "-preset".into(), match mode {
+                            TuningMode::LowLatency => "fast", // Zerolatency tune set below
+                            TuningMode::Smooth => "medium",
+                        }.into(),
+                    ]);
+                }
 
-                    "-c:v".into(), "libx264".into(),
-                    "-threads".into(), threads.to_string(),
-                    // Baseline profile for iOS compatibility.
-                    "-profile:v".into(), "baseline".into(),
-                    "-level".into(), "3.1".into(),
+                // Shared/Common encoding flags (applicable to both CPU and VAAPI where supported, 
+                // or just benign if ignored, but we organize carefully).
+                
+                if hw_accel_task != "vaapi" {
+                     out.extend(["-threads".into(), threads.to_string()]);
+                }
+
+                out.extend([
+                     // Baseline profile for iOS compatibility (Conceptually. VAAPI profile handling differs but h264_vaapi usually defaults to High/Main. 
+                     // We can try forcing profile if needed, but 'baseline' isn't always available in HW).
+                     // Keeping simple for VAAPI first. CPU gets explicit profile.
+                ]);
+
+                if hw_accel_task == "cpu" || hw_accel_task == "none" {
+                     out.extend([
+                        "-profile:v".into(), "baseline".into(),
+                        "-level".into(), "3.1".into(),
+                     ]);
+                }
+
+                out.extend([
                     // HLS Requirement: Closed GOPs for independent segments
                     "-flags".into(), "+cgop".into(),
-                    // Make keyframes predictable to reduce client buffering and align
-                    // fMP4 fragments / HLS segments with IDR boundaries.
+                    // Make keyframes predictable
                     "-g".into(), "50".into(),
                     "-keyint_min".into(), "50".into(),
                     "-sc_threshold".into(), "0".into(),
-                    // Force an IDR roughly every 2s regardless of input fps.
                     "-force_key_frames".into(), "expr:gte(t,n_forced*2)".into(),
-                    "-crf".into(), "18".into(),
+                    
                     "-maxrate".into(), "12M".into(),
                     "-bufsize".into(), "24M".into(),
+                    
                     "-c:a".into(), "aac".into(),
                     "-ac".into(), "2".into(),
                     "-b:a".into(), "128k".into(),
                 ]);
 
-                match mode {
-                    TuningMode::LowLatency => {
-                        out.extend([
-                            "-preset".into(), "fast".into(),
-                            "-tune".into(), "zerolatency".into(),
-                        ]);
-                    }
-                    TuningMode::Smooth => {
-                        out.extend([
-                            // Smooth: stable and CPU-friendly; avoid periodic encoder stalls.
-                            "-preset".into(), "medium".into(),
-                        ]);
+                // Mode-specific tuning (mostly for CPU libx264)
+                if hw_accel_task != "vaapi" {
+                     match mode {
+                        TuningMode::LowLatency => {
+                            out.extend(["-tune".into(), "zerolatency".into()]);
+                        }
+                        TuningMode::Smooth => {} // Preset medium already set above
                     }
                 }
             };

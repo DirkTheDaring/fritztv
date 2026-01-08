@@ -85,6 +85,7 @@ pub async fn create_app(
     idle_timeout: u64,
 
     threads: u8,
+    hw_accel: String,
     monitoring: MonitoringConfig,
 ) -> axum::Router {
 
@@ -95,6 +96,7 @@ pub async fn create_app(
         max_parallel_streams,
         idle_timeout,
         threads,
+        hw_accel,
     );
     let state = Arc::new(AppState {
         channels,

@@ -137,10 +137,11 @@ pub struct StreamManager {
     max_parallel_streams: usize,
     idle_timeout: u64,
     ffmpeg_threads: u8,
+    hw_accel: String,
 }
 
 impl StreamManager {
-    pub fn new(mode: TuningMode, transport: String, max_parallel_streams: usize, idle_timeout: u64, ffmpeg_threads: u8) -> Self {
+    pub fn new(mode: TuningMode, transport: String, max_parallel_streams: usize, idle_timeout: u64, ffmpeg_threads: u8, hw_accel: String) -> Self {
         Self {
             streams: Arc::new(RwLock::new(HashMap::new())),
             mode,
@@ -148,6 +149,7 @@ impl StreamManager {
             max_parallel_streams: max_parallel_streams.max(1),
             idle_timeout,
             ffmpeg_threads,
+            hw_accel,
         }
     }
 
@@ -258,6 +260,7 @@ impl StreamManager {
             self.transport.clone(),
             hls_dir,
             self.ffmpeg_threads,
+            self.hw_accel.clone(),
         );
         
         let active_stream = Arc::new(ActiveStream {
@@ -425,6 +428,7 @@ impl StreamManager {
             self.transport.clone(),
             hls_dir,
             self.ffmpeg_threads,
+            self.hw_accel.clone(),
         );
 
         let active_stream = Arc::new(ActiveStream {

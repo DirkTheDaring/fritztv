@@ -70,11 +70,11 @@ where
 
 #[derive(Debug, Deserialize, Clone)]
 struct TranscodingConfig {
-    mode: ModeArg,
+    mode: TuningMode,
     transport: String,
     idle_timeout: u64,
-    #[serde(default)]
     threads: u8,
+    hw_accel: Option<String>,
 }
 
 
@@ -98,11 +98,10 @@ async fn main() -> anyhow::Result<()> {
     
     info!("Configuration loaded from {}: {:?}", args.config, settings);
     
-    let tuning_mode_arg = args.mode.unwrap_or(settings.transcoding.mode);
-
-    let tuning_mode = match tuning_mode_arg {
-        ModeArg::LowLatency => TuningMode::LowLatency,
-        ModeArg::Smooth => TuningMode::Smooth,
+    let tuning_mode = match args.mode {
+        Some(ModeArg::LowLatency) => TuningMode::LowLatency,
+        Some(ModeArg::Smooth) => TuningMode::Smooth,
+        None => settings.transcoding.mode,
     };
 
     info!("Starting server in {:?} mode (transport: {}, idle: {}s)", tuning_mode, settings.transcoding.transport, settings.transcoding.idle_timeout);
@@ -138,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         settings.server.max_parallel_streams,
         settings.transcoding.idle_timeout,
         settings.transcoding.threads,
+        settings.transcoding.hw_accel.unwrap_or_else(|| "cpu".to_string()),
         settings.monitoring,
     )
     .await;
