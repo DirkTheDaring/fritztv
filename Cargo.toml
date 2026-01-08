@@ -1,6 +1,6 @@
 [package]
 name = "fritztv"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "A lightweight RTSP to fMP4/HLS transcoding server for FritzBox Cable tuners."
 authors = ["DirkTheDaring <baldur@email.de>"]
