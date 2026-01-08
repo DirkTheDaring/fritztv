@@ -103,11 +103,16 @@ fedora-container:
 		$(PROJECT)-rpm:$(FEDORA_VERSION) \
 		bash /work/packaging/rpm/build-rpm.sh /out
 
-release: packages
+release:
 	@if ! command -v gh >/dev/null 2>&1; then \
 		echo "Error: github-cli (gh) is not installed."; \
 		exit 1; \
 	fi
+	@if gh release view --repo $(REPO_USER)/$(REPO_NAME) v$(VERSION) >/dev/null 2>&1; then \
+		echo "Release v$(VERSION) already exists. Skipping creation."; \
+		exit 0; \
+	fi
+	$(MAKE) packages
 	gh release create --repo $(REPO_USER)/$(REPO_NAME) v$(VERSION) \
 		--title "v$(VERSION)" \
 		--generate-notes \
