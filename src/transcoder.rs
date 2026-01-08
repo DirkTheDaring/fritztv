@@ -196,7 +196,8 @@ impl Transcoder {
                                 tokio::select! {
                                     _ = stop_rx_mon.changed() => break,
                                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                                        let processes = sysinfo::ProcessesToUpdate::Some(&[pid]);
+                                        let pids = [pid];
+                                        let processes = sysinfo::ProcessesToUpdate::Some(&pids);
                                         sys.refresh_processes(processes, true);
                                         if let Some(process) = sys.process(pid) {
                                             let usage = process.cpu_usage();
